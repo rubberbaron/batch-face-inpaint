@@ -266,7 +266,8 @@ def faceSwap(p, masks, image, finishedImages, invertMask, forced_filename, pathT
 
         info = infotext(p)
 
-        final_forced_filename = forced_filename+"_"+str(j+1) if forced_filename != None and (p.batch_size > 1 or p.n_iter > 1) else forced_filename
+        always_suffix = True
+        final_forced_filename = forced_filename+"_"+str(j+1) if forced_filename != None and (p.batch_size > 1 or p.n_iter > 1 or always_suffix) else forced_filename
         if opts.samples_format != "png" and image.mode != 'RGB':
             image = image.convert('RGB')
         images.save_image(image, pathToSave if pathToSave !="" else opts.outdir_img2img_samples, "", p.seed, p.prompt, opts.samples_format, info=info, p=p, forced_filename=final_forced_filename)
