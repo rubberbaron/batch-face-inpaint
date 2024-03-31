@@ -2,6 +2,8 @@ FaceDetectDevelopment = False # set to True enable the development panel UI
 
 from modules import images
 from modules.shared import opts
+from modules.textual_inversion import autocrop
+from modules.paths import models_path
 
 from PIL import Image, ImageOps
 
@@ -110,7 +112,7 @@ def getFacialLandmarks(image, facecfg):
 
         return facelandmarks
 
-def computeFaceInfo(landmark, onlyHorizontal, divider, small_width, small_height, small_image_index):
+def computeFaceInfo(landmark, small_width, small_height, small_image_index):
     x_chin = landmark[152][0]
     y_chin = -landmark[152][1]
     x_forehead = landmark[10][0]
@@ -121,18 +123,16 @@ def computeFaceInfo(landmark, onlyHorizontal, divider, small_width, small_height
     
     face_angle = math.atan2(deltaY, deltaX) * 180 / math.pi
 
-    # compute center in global coordinates in case the image was split
-    if onlyHorizontal == True:
-        x = ((small_image_index // divider) * small_width ) + landmark[0][0]
-        y = ((small_image_index %  divider) * small_height) + landmark[0][1]
-    else:
-        x = ((small_image_index %  divider) * small_width ) + landmark[0][0]
-        y = ((small_image_index // divider) * small_height) + landmark[0][1]
+    x = landmark[0][0]
+    y = landmark[0][1]
 
-    return { "angle": face_angle, "center": (x,y) }
+    fi = { }
+    fi["angle"] = face_angle
+    fi["center"] = (x,y)
+    return fi
 
 # try to get landmarks for a face located at rect
-def getFacialLandmarkConvexHull(image, rect, onlyHorizontal, divider, small_width, small_height, small_image_index, facecfg):
+def getFacialLandmarkConvexHull(image, rect, small_width, small_height, small_image_index, facecfg):
     image = np.array(image)
     height, width, channels = image.shape
 
@@ -220,7 +220,7 @@ def getFacialLandmarkConvexHull(image, rect, onlyHorizontal, divider, small_widt
             best_hull[i][0][1] += subrect_y0
 
         # compute face_info and translate it back into the coordinate space
-        face_info = computeFaceInfo(best_landmark, onlyHorizontal, divider, small_width, small_height, small_image_index)
+        face_info = computeFaceInfo(best_landmark, small_width, small_height, small_image_index)
         face_info["center"] = (face_info["center"][0] + subrect_x0, face_info["center"][1] + subrect_y0)
 
     return best_hull, face_info
@@ -248,7 +248,7 @@ def rectangleListOverlap(rlist, rect):
 # use cv2 detectMultiScale directly
 def getFaceRectanglesSimple(image, known_face_rects, facecfg):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    face_cascade = cv2.CascadeClassifier("extensions/batch-face-swap/scripts/haarcascade_frontalface_default.xml")
+    face_cascade = cv2.CascadeClassifier("extensions/batch-face-inpaint/scripts/haarcascade_frontalface_default.xml")
     faces = face_cascade.detectMultiScale(gray, scaleFactor=facecfg.multiScale, minNeighbors=facecfg.minNeighbors, minSize=(facecfg.minFaceSize,facecfg.minFaceSize))
 
     all_faces = []
@@ -258,14 +258,50 @@ def getFaceRectanglesSimple(image, known_face_rects, facecfg):
     return all_faces
 
 
+def getFaceRectanglesYuNet(img_array, known_face_rects):
+    new_faces = []
+    #dnn_model_path = os.path.join(models_path, "opencv/face_detection_yunet.onnx")
+    dnn_model_path = autocrop.download_and_cache_models(os.path.join(models_path, "opencv"))
+    face_detector = cv2.FaceDetectorYN.create(dnn_model_path, "", (0, 0))
+
+    face_detector.setInputSize((img_array.shape[1], img_array.shape[0]))
+    _, faces = face_detector.detect(img_array)
+
+    if faces is None:
+        return new_faces
+
+    face_coords = []
+    for face in faces:
+        if math.isinf(face[0]):
+            continue
+        x = int(face[0])
+        y = int(face[1])
+        w = int(face[2])
+        h = int(face[3])
+        if w == 0 or h == 0:
+            print("ignore w,h = 0 face")
+            continue
+
+        face_coords.append( [ x, y, w, h ] )
+
+    for r in face_coords:
+        if rectangleListOverlap(known_face_rects, r) is None:
+            new_faces.append(r)
+
+    print(f"YuNet found {len(new_faces)} faces beyond the {len(known_face_rects)} from mediapipe", )
+    return new_faces
+
 # use cv2 detectMultiScale at multiple scales
 def getFaceRectangles(image, known_face_rects, facecfg):
+
+    return getFaceRectanglesYuNet(image, known_face_rects)
+
     if not facecfg.optimizeDetect:
         return getFaceRectanglesSimple(image, known_face_rects, facecfg)
 
     height, width, _ = image.shape
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    face_cascade = cv2.CascadeClassifier("extensions/batch-face-swap/scripts/haarcascade_frontalface_default.xml")
+    face_cascade = cv2.CascadeClassifier("extensions/batch-face-inpaint/scripts/haarcascade_frontalface_default.xml")
     all_faces = []
 
     minsize = facecfg.minFaceSize
@@ -314,7 +350,7 @@ def getFaceRectangles4(image, facecfg):
 
     height, width, _ = image.shape
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    face_cascade = cv2.CascadeClassifier("extensions/batch-face-swap/scripts/haarcascade_frontalface_default.xml")
+    face_cascade = cv2.CascadeClassifier("extensions/batch-face-inpaint/scripts/haarcascade_frontalface_default.xml")
     all_faces = []
 
     resize_scale = facecfg.multiScale
@@ -378,7 +414,7 @@ def getFaceRectangles3(image, facecfg):
 
     height, width, _ = image.shape
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    face_cascade = cv2.CascadeClassifier("extensions/batch-face-swap/scripts/haarcascade_frontalface_default.xml")
+    face_cascade = cv2.CascadeClassifier("extensions/batch-face-inpaint/scripts/haarcascade_frontalface_default.xml")
     all_faces = []
 
     size = min(width,height)
@@ -417,7 +453,7 @@ def getFaceRectangles2(image, facecfg):
 
     height, width, _ = image.shape
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    face_cascade = cv2.CascadeClassifier("extensions/batch-face-swap/scripts/haarcascade_frontalface_default.xml")
+    face_cascade = cv2.CascadeClassifier("extensions/batch-face-inpaint/scripts/haarcascade_frontalface_default.xml")
     all_faces = []
     stepSize = int(facecfg.multiScale)
     for size in range(facecfg.minFaceSize, min(width,height), stepSize):
